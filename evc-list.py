@@ -172,7 +172,7 @@ with view_raw:
         else:
             selected = aptInfo
         
-        selApt = selected[['단지명', '단지코드', '도로명주소', '총주차대수', '세대수']]
+        selApt = selected[['단지명', '단지코드', '도로명주소', '총주차대수', '세대수', '시도', '시군구']]
         # selected = selApt.sort_values(by='단지명')
 
         st.write("아파트 현황", len(selected))
@@ -186,7 +186,7 @@ with view_raw:
 
 # 주소가 유사한 아파트 찾기
 @st.cache_data
-def get_matches(selEvc, THRESHOLD=75):
+def get_matches(selEvc, selApt, THRESHOLD=75):
     matches = []
     # Loop through each 주소 in selEvc    
     for i, row in selEvc.iterrows():
@@ -233,11 +233,13 @@ compare_result = {'주소일치': 0, '유사추정': 0, '불일치': 0}
 
 # 각 그룹에 대해 get_matches 함수를 반복적으로 호출합니다.
 for (region, district), group in selEvc.groupby(['지역', '시군구']):
-    selEvc_group, compare_result_group = get_matches(group, THRESHOLD)
-    result_list.append(selEvc_group)
-    st.info(f"{region} {district}의 데이터를 처리했습니다.")
-    for key in compare_result.keys():
-        compare_result[key] += compare_result_group[key]
+    for (r2, d2), g2 in selApt.groupby(['시도', '시군구']):
+        if (region, district) == (r2, d2):
+            selEvc_group, compare_result_group = get_matches(group, g2, THRESHOLD)
+            result_list.append(selEvc_group)
+            st.info(f"{region} {district}의 데이터를 처리했습니다.")
+            for key in compare_result.keys():
+                compare_result[key] += compare_result_group[key]
 
 # 각 그룹의 결과를 연결하여 최종 결과 데이터프레임을 만듭니다.
 if result_list:
