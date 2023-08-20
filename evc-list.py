@@ -62,7 +62,7 @@ def load_datafile():
         df = df[['시도', '시군구', '단지코드', '단지명', '도로명주소', '총주차대수', '세대수']]
         aptInfo = df.applymap(lambda x: x.rstrip() if isinstance(x, str) else x)
         
-    st.success('Data Loaded!')
+        st.success('Data Loaded!')
     return evc, aptInfo
 
 @st.cache_data
@@ -70,7 +70,7 @@ def load_data_parquet():
     with st.spinner('첫 실행 시 사례 데이터를 로딩합니다. 잠시만 기다려주세요...'):
         evc = pd.read_parquet("evc-list.parquet")
         aptInfo = pd.read_parquet("apt-list.parquet")
-    st.success('Data Loaded!')
+        st.success('Data Loaded!')
     return evc, aptInfo
 
 @st.cache_data
