@@ -73,44 +73,6 @@ def load_data_parquet():
         # st.success('Data Loaded!')
     return evc, aptInfo
 
-@st.cache_data
-def get_matches(selEvc):
-    matches = []
-    # Loop through each 주소 in selEvc    
-    for i, row in selEvc.iterrows():
-        best_match = {'단지코드': "NA", '단지명': "NA", '비교주소': "NA", '매칭점수': 0, '이름비교': 0, '주소비교': 0}
-        # Loop through each 도로명주소 in selApt
-        for j, row2 in selApt.iterrows():
-            score, name_score, address_score = get_name_addr_similarity((row['충전소'], row['주소']), (row2['단지명'], row2['도로명주소']))
-
-            # If the score is greater than 90 and better than the previous best match, update the best match
-            if score > best_match['매칭점수']:
-                best_match = {
-                    '단지코드': row2['단지코드'],
-                    '단지명': row2['단지명'],
-                    '비교주소': row2['도로명주소'],
-                    '매칭점수': score,
-                    '이름비교': name_score,
-                    '주소비교': address_score
-                }
-                if score < THRESHOLD:
-                    best_match['단지코드'] = "NA"
-
-        # Append the best match 단지코드 to the list
-        matches.append(best_match)
-        
-    # 새로운 칼럼들을 selEvc DataFrame에 추가
-    for key in matches[0].keys():
-        selEvc[key] = [match[key] for match in matches]
-
-    compare_result = {
-        '주소일치': len(selEvc[selEvc['매칭점수'] == 100]),
-        '유사추정': len(selEvc[(selEvc['매칭점수'] < 100) & (selEvc['단지코드'] != "NA")]),
-        '불일치': len(selEvc[selEvc['단지코드'] == "NA"])
-        }
-    return selEvc, compare_result
-
-
 
 st.title("충전 데이터 분석")
 """
@@ -122,7 +84,7 @@ https://www.ev.or.kr/evmonitor 에서 받은 충전소 데이터에서 시설구
 evc, aptInfo = load_data_parquet()
 
 # Set up sidebar
-THRESHOLD = st.sidebar.slider("(단지명 및 주소) 유사도 임계값", 0, 100, 70, 1)
+THRESHOLD = st.sidebar.slider("(단지명 및 주소) 유사도 임계값", 0, 100, 75, 1)
 
 # Study on the number of charging stations in each Apt
 st.sidebar.header("아파트 충전기 설치 현황")
@@ -223,6 +185,45 @@ with view_raw:
 
 
 # 주소가 유사한 아파트 찾기
+@st.cache_data
+def get_matches(selEvc):
+    matches = []
+    # Loop through each 주소 in selEvc    
+    for i, row in selEvc.iterrows():
+        best_match = {'단지코드': "NA", '단지명': "NA", '비교주소': "NA", '매칭점수': 0, '이름비교': 0, '주소비교': 0}
+        # Loop through each 도로명주소 in selApt
+        for j, row2 in selApt.iterrows():
+            score, name_score, address_score = get_name_addr_similarity((row['충전소'], row['주소']), (row2['단지명'], row2['도로명주소']))
+
+            # If the score is greater than 90 and better than the previous best match, update the best match
+            if score > best_match['매칭점수']:
+                best_match = {
+                    '단지코드': row2['단지코드'],
+                    '단지명': row2['단지명'],
+                    '비교주소': row2['도로명주소'],
+                    '매칭점수': score,
+                    '이름비교': name_score,
+                    '주소비교': address_score
+                }
+                if score < THRESHOLD:
+                    best_match['단지코드'] = "NA"
+
+        # Append the best match 단지코드 to the list
+        matches.append(best_match)
+        
+    # 새로운 칼럼들을 selEvc DataFrame에 추가
+    for key in matches[0].keys():
+        selEvc[key] = [match[key] for match in matches]
+
+    compare_result = {
+        '주소일치': len(selEvc[selEvc['매칭점수'] == 100]),
+        '유사추정': len(selEvc[(selEvc['매칭점수'] < 100) & (selEvc['단지코드'] != "NA")]),
+        '불일치': len(selEvc[selEvc['단지코드'] == "NA"])
+        }
+    return selEvc, compare_result
+
+
+
 view_context = st.expander("아파트 이름 & 주소 유사도 검색 결과", expanded=False)
 
 # selEvc, compare_result = get_matches(selEvc)
