@@ -125,14 +125,14 @@ aptEvc.rename(columns={'충전기ID': '충전기수'}, inplace=True)
 # 지역 선택한 것만 보이도록 selectbox 만들기
 
 option1 = ['전체 선택'] + list(aptEvc['지역'].unique())
-selected_province = st.sidebar.selectbox('시도를 선택하세요', option1, index=1)
+selected_province = st.sidebar.selectbox('시도를 선택하세요', option1, index=min(1, len(option1)-1))
 if selected_province == '전체 선택':
     option2 = ['전체 선택']
     selected_province = None
 else:
     option2 = ['전체 선택'] + list(aptEvc[aptEvc['지역'] == selected_province]['시군구'].unique())
 
-selected_region = st.sidebar.selectbox('시군구를 선택하세요', option2, index=1)
+selected_region = st.sidebar.selectbox('시군구를 선택하세요', option2, index=min(1, len(option2)-1))
 if selected_region == '전체 선택':
     selected_region = None
 
