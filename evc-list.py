@@ -14,7 +14,7 @@ def get_address_similarity(addr1, addr2):
     base2, num2 = addr2.rsplit(" ", 1) if " " in addr2 else (addr2, "")
 
     num_similarity = fuzz.ratio(num1, num2)  # 주소 끝부분 따로 비교하기
-    base_similarity = fuzz.partial_ratio(base1, base2)  # 앞부분은 부분 일치 비교
+    base_similarity = fuzz.token_set_ratio(base1, base2)  # 앞부분은 부분 일치 비교
         
     total_similarity = 0.6 * num_similarity + 0.4 * base_similarity
     return total_similarity
