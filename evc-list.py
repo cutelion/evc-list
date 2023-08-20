@@ -84,7 +84,7 @@ https://www.ev.or.kr/evmonitor 에서 받은 충전소 데이터에서 시설구
 evc, aptInfo = load_data_parquet()
 
 # Set up sidebar
-THRESHOLD = st.sidebar.slider("(단지명 및 주소) 유사도 임계값", 0, 100, 75, 1)
+THRESHOLD = st.sidebar.slider("(단지명 및 주소) 유사도 임계값", 60, 100, 75, 5)
 
 # Study on the number of charging stations in each Apt
 st.sidebar.header("아파트 충전기 설치 현황")
@@ -186,7 +186,7 @@ with view_raw:
 
 # 주소가 유사한 아파트 찾기
 @st.cache_data
-def get_matches(selEvc):
+def get_matches(selEvc, THRESHOLD=75):
     matches = []
     # Loop through each 주소 in selEvc    
     for i, row in selEvc.iterrows():
@@ -233,7 +233,7 @@ compare_result = {'주소일치': 0, '유사추정': 0, '불일치': 0}
 
 # 각 그룹에 대해 get_matches 함수를 반복적으로 호출합니다.
 for (region, district), group in selEvc.groupby(['지역', '시군구']):
-    selEvc_group, compare_result_group = get_matches(group)
+    selEvc_group, compare_result_group = get_matches(group, THRESHOLD)
     result_list.append(selEvc_group)
     st.info(f"{region} {district}의 데이터를 처리했습니다.")
     for key in compare_result.keys():
