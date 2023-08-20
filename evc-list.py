@@ -70,7 +70,7 @@ def load_data_parquet():
     with st.spinner('첫 실행 시 사례 데이터를 로딩합니다. 잠시만 기다려주세요...'):
         evc = pd.read_parquet("evc-list.parquet")
         aptInfo = pd.read_parquet("apt-list.parquet")
-        st.success('Data Loaded!')
+        # st.success('Data Loaded!')
     return evc, aptInfo
 
 @st.cache_data
@@ -134,6 +134,7 @@ if not filtered_df.empty:
     # Group by '충전소' and count the entries
     grouped = filtered_df.groupby('충전소').count()
     st.sidebar.write("'충전소'가 있는 아파트 총수: ", len(grouped))
+    st.sidebar.write("k-apt 등록 아파트 총수: ", len(aptInfo))
     # st.write(grouped)
     
 # 아파트별 충전기 데이터 새로 만들기
@@ -161,17 +162,19 @@ aptEvc.rename(columns={'충전기ID': '충전기수'}, inplace=True)
 # study on # of Apt in each region 
 # 지역 선택한 것만 보이도록 selectbox 만들기
 
-option1 = ['전체 선택'] + list(aptInfo['시도'].unique())
+option1 = ['전체 선택'] + list(aptEvc['지역'].unique())
 selected_province = st.sidebar.selectbox('시도를 선택하세요', option1, index=1)
 if selected_province == '전체 선택':
     option2 = ['전체 선택']
     selected_province = None
 else:
-    option2 = ['전체 선택'] + list(aptInfo[aptInfo['시도'] == selected_province]['시군구'].unique())
+    option2 = ['전체 선택'] + list(aptEvc[aptEvc['지역'] == selected_province]['시군구'].unique())
 
 selected_region = st.sidebar.selectbox('시군구를 선택하세요', option2, index=1)
 if selected_region == '전체 선택':
     selected_region = None
+
+st.sidebar.warning("전체선택을 하면 처리하는 데 시간이 꽤 걸립니다. 주의하세요.")
 
 # 선택된 시군구 관련 데이터 표시하기 위한 sidebar
 sidebar_selected = st.sidebar.container()
@@ -190,7 +193,7 @@ with view_raw:
         else:
             selected = aptEvc
             
-        selEvc = selected[['충전소', '주소', '충전기수']]
+        selEvc = selected[['충전소', '주소', '충전기수', '지역', '시군구']]
         
         st.write("충전소 현황", len(selected))
         st.write(selected)
@@ -222,7 +225,23 @@ with view_raw:
 # 주소가 유사한 아파트 찾기
 view_context = st.expander("아파트 이름 & 주소 유사도 검색 결과", expanded=False)
 
-selEvc, compare_result = get_matches(selEvc)
+# selEvc, compare_result = get_matches(selEvc)
+# 각 그룹의 결과를 저장할 빈 리스트를 생성합니다.
+result_list = []
+compare_result = {'주소일치': 0, '유사추정': 0, '불일치': 0}
+
+# 각 그룹에 대해 get_matches 함수를 반복적으로 호출합니다.
+for (region, district), group in selEvc.groupby(['지역', '시군구']):
+    selEvc_group, compare_result_group = get_matches(group)
+    result_list.append(selEvc_group)
+    st.info(f"{region} {district}의 데이터를 처리했습니다.")
+    for key in compare_result.keys():
+        compare_result[key] += compare_result_group[key]
+
+# 각 그룹의 결과를 연결하여 최종 결과 데이터프레임을 만듭니다.
+if result_list:
+    result_df = pd.concat(result_list, ignore_index=True)
+    selEvc = result_df
 
 with sidebar_selected:
     st.write("주소 일치 하는 경우가", compare_result['주소일치'], "개,\n비슷하게 추정한 경우가", compare_result['유사추정'], "개,\n불일치하는 경우가", compare_result['불일치'], "개 입니다.")
