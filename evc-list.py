@@ -255,6 +255,30 @@ with view_context:
     st.write("이름 및 주소 불일치", compare_result['불일치'], selEvc[selEvc['단지코드'] == "NA"])
 
 
+# LLM을 이용하여 유사도가 애매한 경우에 대하여 재검토 (NA중에서 매칭점수가 50점 이상인 경우)
+st.header("LLM 이용한 유사도 검토")
+df = selEvc[(selEvc['매칭점수'] > 50) & (selEvc['단지코드'] == "NA")]
+
+schema = {
+    "properties": {
+        "충전소": {"type": "string"},
+        "주소": {"type": "string"},
+        "단지명": {"type": "string"},
+        "비교주소": {"type": "string"},
+        "유사": {"type": "boolean"},
+    },
+    "required": [],
+}
+
+chain = create_extraction_chain(schema, llm)
+
+inp = """Alex is 5 feet tall. Claudia is 1 feet taller Alex and jumps higher than him. Claudia is a brunette and Alex is blonde.
+Willow is a German Shepherd that likes to play with other dogs and can always be found playing with Milo, a border collie that lives close by."""
+
+chain.run(inp)
+
+
+
 # 단지코드별로 groupby해서 전체 주차장수와 충전기수, 비율을 구하기
 df = selEvc[selEvc['단지코드'] != "NA"]
 df = df.groupby('단지코드').agg({'충전기수': 'sum'}).reset_index()
