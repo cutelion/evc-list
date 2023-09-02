@@ -9,15 +9,27 @@ os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 openai_api_key = os.environ.get("OPENAI_API_KEY")
 
 # 아파트 이름과 주소 유사도 비교
-def get_address_similarity(addr1, addr2):
-    base1, num1 = addr1.rsplit(" ", 1) if " " in addr1 else (addr1, "")
-    base2, num2 = addr2.rsplit(" ", 1) if " " in addr2 else (addr2, "")
+def split_address(addr):
+    addrs = addr.split(",")  # 쉼표를 기준으로 주소를 나눈다.
+    addrs = [addr.rsplit("(", 1)[0].strip() for addr in addrs]  # 괄호 안의 내용 제거
+    bases_nums = [addr.rsplit(" ", 1) if " " in addr else (addr, "") for addr in addrs]
+    return bases_nums
 
-    num_similarity = fuzz.ratio(num1, num2)  # 주소 끝부분 따로 비교하기
-    base_similarity = fuzz.token_set_ratio(base1, base2)  # 앞부분은 부분 일치 비교
-        
-    total_similarity = 0.6 * num_similarity + 0.4 * base_similarity
-    return total_similarity
+def get_address_similarity(addr1, addr2):
+    bases_nums1 = split_address(addr1)
+    bases_nums2 = split_address(addr2)
+    
+    max_similarity = 0
+    
+    for base1, num1 in bases_nums1:
+        for base2, num2 in bases_nums2:
+            num_similarity = fuzz.ratio(num1, num2)     # 번지수를 문자열로 비교하는 방법
+            base_similarity = fuzz.partial_ratio(base1, base2)  # 앞부분은 부분 일치 비교
+            addr_similarity = 0.4 * num_similarity + 0.6 * base_similarity
+            max_similarity = max(max_similarity, addr_similarity)
+    
+    return max_similarity
+
 
 def get_name_similarity(name1, name2):
     return fuzz.token_set_ratio(name1, name2)
@@ -28,8 +40,8 @@ def get_name_addr_similarity(data1, data2):
     
     name_similarity = get_name_similarity(name1, name2)
     address_similarity = get_address_similarity(addr1, addr2)
-    
-    if address_similarity == 100 or name_similarity == 100:
+
+    if address_similarity == 100 or (name_similarity == 100 and address_similarity > 70):
         total_similarity = 100
     else:
         total_similarity = 0.4 * name_similarity + 0.6 * address_similarity
@@ -46,6 +58,45 @@ def get_oai_similarity(data1, data2):
     db = FAISS.from_texts([text1], OpenAIEmbeddings())
     similarity = db.similarity_search_with_relevance_scores(text2)
     return similarity[0][1] # similarity score
+
+# 주소가 유사한 아파트 찾기
+@st.cache_data
+def get_matches(selEvc, selApt, THRESHOLD=75):
+    matches = []
+    # Loop through each 주소 in selEvc    
+    for i, row in selEvc.iterrows():
+        best_match = {'단지코드': "NA", '단지명': "NA", '비교주소': "NA", '매칭점수': 0, '이름비교': 0, '주소비교': 0}
+        # Loop through each 도로명주소 in selApt
+        for j, row2 in selApt.iterrows():
+            score, name_score, address_score = get_name_addr_similarity((row['충전소'], row['주소']), (row2['단지명'], row2['도로명주소']))
+
+            # If the score is greater than 90 and better than the previous best match, update the best match
+            if score > best_match['매칭점수']:
+                best_match = {
+                    '단지코드': row2['단지코드'],
+                    '단지명': row2['단지명'],
+                    '비교주소': row2['도로명주소'],
+                    '매칭점수': score,
+                    '이름비교': name_score,
+                    '주소비교': address_score
+                }
+                if score < THRESHOLD:
+                    best_match['단지코드'] = "NA"
+
+        # Append the best match 단지코드 to the list
+        matches.append(best_match)
+        
+    # 새로운 칼럼들을 selEvc DataFrame에 추가
+    for key in matches[0].keys():
+        selEvc[key] = [match[key] for match in matches]
+
+    compare_result = {
+        '주소일치': len(selEvc[selEvc['매칭점수'] == 100]),
+        '유사추정': len(selEvc[(selEvc['매칭점수'] < 100) & (selEvc['단지코드'] != "NA")]),
+        '불일치': len(selEvc[selEvc['단지코드'] == "NA"])
+        }
+    return selEvc, compare_result
+
 
 @st.cache_data
 def load_datafile():
@@ -184,43 +235,6 @@ with view_raw:
         # st.write(count_addr, "개의 주소가 없습니다.")
 
 
-# 주소가 유사한 아파트 찾기
-@st.cache_data
-def get_matches(selEvc, selApt, THRESHOLD=75):
-    matches = []
-    # Loop through each 주소 in selEvc    
-    for i, row in selEvc.iterrows():
-        best_match = {'단지코드': "NA", '단지명': "NA", '비교주소': "NA", '매칭점수': 0, '이름비교': 0, '주소비교': 0}
-        # Loop through each 도로명주소 in selApt
-        for j, row2 in selApt.iterrows():
-            score, name_score, address_score = get_name_addr_similarity((row['충전소'], row['주소']), (row2['단지명'], row2['도로명주소']))
-
-            # If the score is greater than 90 and better than the previous best match, update the best match
-            if score > best_match['매칭점수']:
-                best_match = {
-                    '단지코드': row2['단지코드'],
-                    '단지명': row2['단지명'],
-                    '비교주소': row2['도로명주소'],
-                    '매칭점수': score,
-                    '이름비교': name_score,
-                    '주소비교': address_score
-                }
-                if score < THRESHOLD:
-                    best_match['단지코드'] = "NA"
-
-        # Append the best match 단지코드 to the list
-        matches.append(best_match)
-        
-    # 새로운 칼럼들을 selEvc DataFrame에 추가
-    for key in matches[0].keys():
-        selEvc[key] = [match[key] for match in matches]
-
-    compare_result = {
-        '주소일치': len(selEvc[selEvc['매칭점수'] == 100]),
-        '유사추정': len(selEvc[(selEvc['매칭점수'] < 100) & (selEvc['단지코드'] != "NA")]),
-        '불일치': len(selEvc[selEvc['단지코드'] == "NA"])
-        }
-    return selEvc, compare_result
 
 
 
@@ -253,6 +267,7 @@ with view_context:
     st.write("주소 일치", compare_result['주소일치'], selEvc[selEvc['매칭점수'] == 100])
     st.write("이름 및 주소 유사", compare_result['유사추정'], selEvc[(selEvc['매칭점수'] < 100) & (selEvc['단지코드'] != "NA")])
     st.write("이름 및 주소 불일치", compare_result['불일치'], selEvc[selEvc['단지코드'] == "NA"])
+
 
 
 # 단지코드별로 groupby해서 전체 주차장수와 충전기수, 비율을 구하기
