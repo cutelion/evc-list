@@ -4,6 +4,8 @@ import pandas as pd  # for DataFrames to store article sections and embedding
 from fuzzywuzzy import fuzz
 from langchain.vectorstores import FAISS
 from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.chat_models import ChatOpenAI
+from langchain.chains import create_extraction_chain
 
 os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 openai_api_key = os.environ.get("OPENAI_API_KEY")
@@ -23,8 +25,9 @@ def get_address_similarity(addr1, addr2):
     
     for base1, num1 in bases_nums1:
         for base2, num2 in bases_nums2:
-            num_similarity = fuzz.ratio(num1, num2)     # 번지수를 문자열로 비교하는 방법
-            base_similarity = fuzz.partial_ratio(base1, base2)  # 앞부분은 부분 일치 비교
+            num_similarity = fuzz.ratio(num1, num2)     # 번지수를 문자열로 비교
+            # 앞부분은 토큰 비교 (OO동 있어도 됨), partial_ratio 쓰면 빈 칸 무시하기에는 좋으나 동이 들어있으면 낮게 나옴
+            base_similarity = fuzz.token_set_ratio(base1, base2)
             addr_similarity = 0.4 * num_similarity + 0.6 * base_similarity
             max_similarity = max(max_similarity, addr_similarity)
     
