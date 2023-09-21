@@ -21,7 +21,7 @@ import json
 
 
 # get file path: changed from loading from ktcb_directory.py
-base_path = os.getcwd()
+base_path = 'pages'
 data_direc = os.path.join(base_path, 'data')
 pickle_raw = os.path.join(base_path, 'pickle_raw')
 
