@@ -4,3 +4,8 @@ fuzzywuzzy
 faiss-cpu
 openai
 langchain
+python-dotenv
+camelot-py[base]
+pypdf
+PyPDF2<3.0
+opencv-python-headless
