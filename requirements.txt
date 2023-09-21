@@ -4,6 +4,7 @@ fuzzywuzzy
 faiss-cpu
 openai
 langchain
+tiktoken
 python-dotenv
 camelot-py[base]
 pypdf
