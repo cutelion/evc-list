@@ -2,4 +2,5 @@ streamlit
 python-levenshtein
 fuzzywuzzy
 faiss-cpu
+openai
 langchain

@@ -2,8 +2,13 @@ import os
 import streamlit as st
 import pandas as pd  # for DataFrames to store article sections and embedding
 from fuzzywuzzy import fuzz
+from io import StringIO
 from langchain.vectorstores import FAISS
 from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.chat_models import ChatOpenAI
+from langchain.chains import create_extraction_chain
+from langchain import PromptTemplate, OpenAI, LLMChain
+from langchain.callbacks import StreamlitCallbackHandler
 
 os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 openai_api_key = os.environ.get("OPENAI_API_KEY")
@@ -23,9 +28,10 @@ def get_address_similarity(addr1, addr2):
     
     for base1, num1 in bases_nums1:
         for base2, num2 in bases_nums2:
-            num_similarity = fuzz.ratio(num1, num2)     # 번지수를 문자열로 비교하는 방법
-            base_similarity = fuzz.partial_ratio(base1, base2)  # 앞부분은 부분 일치 비교
-            addr_similarity = 0.4 * num_similarity + 0.6 * base_similarity
+            num_similarity = fuzz.ratio(num1, num2)     # 번지수를 문자열로 비교
+            # 앞부분은 토큰 비교 (OO동 있어도 됨), partial_ratio 쓰면 빈 칸 무시하기에는 좋으나 동이 들어있으면 낮게 나옴
+            base_similarity = fuzz.token_set_ratio(base1, base2)
+            addr_similarity = 0.3 * num_similarity + 0.7 * base_similarity
             max_similarity = max(max_similarity, addr_similarity)
     
     return max_similarity
@@ -44,7 +50,7 @@ def get_name_addr_similarity(data1, data2):
     if address_similarity == 100 or (name_similarity == 100 and address_similarity > 70):
         total_similarity = 100
     else:
-        total_similarity = 0.4 * name_similarity + 0.6 * address_similarity
+        total_similarity = 0.5 * name_similarity + 0.5 * address_similarity
     return total_similarity, name_similarity, address_similarity
 
 # 이름과 주소 유사도 비교 using OpenAI's Sentence Embedding
@@ -59,43 +65,146 @@ def get_oai_similarity(data1, data2):
     similarity = db.similarity_search_with_relevance_scores(text2)
     return similarity[0][1] # similarity score
 
-# 주소가 유사한 아파트 찾기
+# 이름과 주소가 유사한 아파트 찾기
 @st.cache_data
 def get_matches(selEvc, selApt, THRESHOLD=75):
-    matches = []
-    # Loop through each 주소 in selEvc    
-    for i, row in selEvc.iterrows():
-        best_match = {'단지코드': "NA", '단지명': "NA", '비교주소': "NA", '매칭점수': 0, '이름비교': 0, '주소비교': 0}
-        # Loop through each 도로명주소 in selApt
-        for j, row2 in selApt.iterrows():
-            score, name_score, address_score = get_name_addr_similarity((row['충전소'], row['주소']), (row2['단지명'], row2['도로명주소']))
+    def get_best_match(row):
+        scores = selApt.apply(lambda row2: get_name_addr_similarity((row['충전소'], row['주소']), (row2['단지명'], row2['도로명주소'])), axis=1)
+        scores = pd.DataFrame(scores.tolist(), columns=['매칭점수', '이름비교', '주소비교'])
+        max_idx = scores['매칭점수'].idxmax()
+        best_match = {
+            '단지코드': selApt.iloc[max_idx]['단지코드'],
+            '단지명': selApt.iloc[max_idx]['단지명'],
+            '비교주소': selApt.iloc[max_idx]['도로명주소'],
+            '매칭점수': scores.iloc[max_idx]['매칭점수'],
+            '이름비교': scores.iloc[max_idx]['이름비교'],
+            '주소비교': scores.iloc[max_idx]['주소비교'],
+            'Confirm': True if scores.iloc[max_idx]['매칭점수'] >= THRESHOLD else False
+        }
+        # best_match['Confirm'] = True if best_match['매칭점수'] >= THRESHOLD else False
+        # st.write(best_match)
 
-            # If the score is greater than 90 and better than the previous best match, update the best match
-            if score > best_match['매칭점수']:
-                best_match = {
-                    '단지코드': row2['단지코드'],
-                    '단지명': row2['단지명'],
-                    '비교주소': row2['도로명주소'],
-                    '매칭점수': score,
-                    '이름비교': name_score,
-                    '주소비교': address_score
-                }
-                if score < THRESHOLD:
-                    best_match['단지코드'] = "NA"
-
-        # Append the best match 단지코드 to the list
-        matches.append(best_match)
-        
-    # 새로운 칼럼들을 selEvc DataFrame에 추가
-    for key in matches[0].keys():
-        selEvc[key] = [match[key] for match in matches]
+        return best_match
+    
+    matches = selEvc.apply(get_best_match, axis=1)
+    matches = pd.DataFrame(matches.tolist())
+    selEvc = pd.concat([selEvc.reset_index(drop=True), matches], axis=1)
 
     compare_result = {
-        '주소일치': len(selEvc[selEvc['매칭점수'] == 100]),
-        '유사추정': len(selEvc[(selEvc['매칭점수'] < 100) & (selEvc['단지코드'] != "NA")]),
-        '불일치': len(selEvc[selEvc['단지코드'] == "NA"])
-        }
+        '주소일치': len(selEvc[selEvc['매칭점수'] == 100.0]),
+        '유사추정': len(selEvc[(selEvc['매칭점수'] < 100.0) & (selEvc['Confirm'] == True)]),
+        '불일치': len(selEvc[selEvc['Confirm'] == False])
+    }
+
     return selEvc, compare_result
+
+@st.cache_data
+def llm_match(df_unmatched: pd.DataFrame) -> pd.DataFrame:
+    """
+    [이름, 주소, 이름2, 주소2] 형태로 된 DF를 받아서 두 엔터티가 유사한지 확인하는 LLM을 실행합니다.
+    :param df_unmatched: [이름, 주소, 이름2, 주소2] 형태로 된 DF
+    :return: [이름, 주소, 이름2, 주소2, 유사도(Bool)] 형태로 된 DF 
+    """
+
+    # LLM을 이용하여 유사도가 애매한 경우에 대하여 재검토 (NA중에서 매칭점수가 특정 이상인 경우)
+
+    # 모든 행에 대해서 T / F 표시
+    PROMPT = """Every line in <INPUT> is composed two entities with name and address and separated by semi-colon. 
+    "name1"; "address1"; "name2"; "address2"
+    Compare two entities in single row and decide if they are similar or not.
+    <OUTPUT> should be same as <INPUT> but with an additional column shows similar or not by saying "True" or "False".
+
+    For example,
+    <INPUT>
+    신대연코오롱하늘채; 부산광역시 남구 홍곡로 320번길 132; 신대연코오롱하늘채아파트; 부산광역시 남구 홍곡로320번길 132
+    화성동탄상록리슈빌아파트(공무원연금공단)(21년); 경기도 화성시 동탄순환대로29길 57; 화성동탄상록리슈빌아파트; 경기도 화성시 동탄순환대로 706
+    동탄2 LH26단지(65BL); 경기도 화성시 송동 681-127; 동탄2 LH26단지(65BL)아파트; 경기도 화성시 동탄대로9길 20
+    화성시 동탄지웰에스테이트; 경기도 화성시 동탄반석로 160; 동탄현대하이페리온; 경기도 화성시 동탄반석로 156
+
+    <OUTPUT>
+    신대연코오롱하늘채; 부산광역시 남구 홍곡로 320번길 132; 신대연코오롱하늘채아파트; 부산광역시 남구 홍곡로320번길 132; True
+    화성동탄상록리슈빌아파트(공무원연금공단)(21년); 경기도 화성시 동탄순환대로29길 57; 화성동탄상록리슈빌아파트; 경기도 화성시 동탄순환대로 706; True
+    동탄2 LH26단지(65BL); 경기도 화성시 송동 681-127; 동탄2 LH26단지(65BL)아파트; 경기도 화성시 동탄대로9길 20; True
+    화성시 동탄지웰에스테이트; 경기도 화성시 동탄반석로 160; 동탄현대하이페리온; 경기도 화성시 동탄반석로 156; False
+
+    Please check the similarity of the following entities.
+    <INPUT>
+    {input}
+    """
+
+    # True인 행만 남기기 - 잘 안됨
+    PROMPT_1 = """Every line in <INPUT> is composed two entities with name and address and separated by semi-colon. 
+    "name1"; "address1"; "name2"; "address2"
+    Compare two entities in single row and decide if they are similar or not. If similar, append "True" in <OUTPUT> otherwise discard the row.
+
+    For example,
+    <INPUT>
+    신대연코오롱하늘채; 부산광역시 남구 홍곡로 320번길 132; 신대연코오롱하늘채아파트; 부산광역시 남구 홍곡로320번길 132
+    화성동탄상록리슈빌아파트(공무원연금공단)(21년); 경기도 화성시 동탄순환대로29길 57; 화성동탄상록리슈빌아파트; 경기도 화성시 동탄순환대로 706
+    화성시 동탄지웰에스테이트; 경기도 화성시 동탄반석로 160; 동탄현대하이페리온; 경기도 화성시 동탄반석로 156
+    동탄2 LH26단지(65BL); 경기도 화성시 송동 681-127; 동탄2 LH26단지(65BL)아파트; 경기도 화성시 동탄대로9길 20
+
+    <OUTPUT>
+    신대연코오롱하늘채; 부산광역시 남구 홍곡로 320번길 132; 신대연코오롱하늘채아파트; 부산광역시 남구 홍곡로320번길 132; True
+    화성동탄상록리슈빌아파트(공무원연금공단)(21년); 경기도 화성시 동탄순환대로29길 57; 화성동탄상록리슈빌아파트; 경기도 화성시 동탄순환대로 706; True
+    동탄2 LH26단지(65BL); 경기도 화성시 송동 681-127; 동탄2 LH26단지(65BL)아파트; 경기도 화성시 동탄대로9길 20; True
+
+    Please check the similarity of the following entities.
+    <INPUT>
+    {input}
+    """
+
+    # gpt3용 prompt
+    PROMPT_gpt3 = """Every line in <INPUT> is composed two entities with name and address and separated by semi-colon. 
+    "name1"; "address1"; "name2"; "address2"
+    Compare two entities in single row and decide if they are similar or not.
+    <OUTPUT> should be same as <INPUT> but with an additional column shows similar or not by saying "True" or "False".
+
+    For example,
+    <INPUT>
+    신대연코오롱하늘채; 부산광역시 남구 홍곡로 320번길 132; 신대연코오롱하늘채아파트; 부산광역시 남구 홍곡로320번길 132
+    화성동탄상록리슈빌아파트(공무원연금공단)(21년); 경기도 화성시 동탄순환대로29길 57; 화성동탄상록리슈빌아파트; 경기도 화성시 동탄순환대로 706
+    동탄2 LH26단지(65BL); 경기도 화성시 송동 681-127; 동탄2 LH26단지(65BL)아파트; 경기도 화성시 동탄대로9길 20
+    화성시 동탄지웰에스테이트; 경기도 화성시 동탄반석로 160; 동탄현대하이페리온; 경기도 화성시 동탄반석로 156
+
+    <OUTPUT>
+    신대연코오롱하늘채; 부산광역시 남구 홍곡로 320번길 132; 신대연코오롱하늘채아파트; 부산광역시 남구 홍곡로320번길 132; True
+    화성동탄상록리슈빌아파트(공무원연금공단)(21년); 경기도 화성시 동탄순환대로29길 57; 화성동탄상록리슈빌아파트; 경기도 화성시 동탄순환대로 706; True
+    동탄2 LH26단지(65BL); 경기도 화성시 송동 681-127; 동탄2 LH26단지(65BL)아파트; 경기도 화성시 동탄대로9길 20; True
+    화성시 동탄지웰에스테이트; 경기도 화성시 동탄반석로 160; 동탄현대하이페리온; 경기도 화성시 동탄반석로 156; False
+
+    Please compare the similarity of the following entities and write down <OUTPUT>.
+    <INPUT>
+    {input}
+    """
+
+    st_callback = StreamlitCallbackHandler(st.container(), expand_new_thoughts=False, collapse_completed_thoughts=True)
+    gpt3_16 = ChatOpenAI(model_name = "gpt-3.5-turbo-16k", temperature=0.0, streaming=True, callbacks=[st_callback])
+    gpt3 = ChatOpenAI(model_name = "gpt-3.5-turbo", temperature=0.0, streaming=True, callbacks=[st_callback])
+    gpt4 = ChatOpenAI(model_name = "gpt-4", temperature=0.0, streaming=True, callbacks=[st_callback])
+
+    llm_chain = LLMChain(llm=gpt3, prompt=PromptTemplate.from_template(PROMPT_gpt3), verbose=True)
+
+    str_buffer = StringIO()
+    df_unmatched[['충전소', '주소', '단지명', '비교주소']].to_csv(str_buffer, sep=";", header=False, index=False)
+    input = str_buffer.getvalue()
+
+    output = llm_chain.run(input)   # return output string from LLM
+
+    # convert output string to dataframe
+    str_buffer = StringIO(output)
+    df_new = pd.read_csv(str_buffer, sep=";", header=None, names=['충전소', '주소', '단지명', '비교주소', 'byLLM'], skiprows=1)
+
+    # True/False 값을 문자열에서 불리언으로 변환
+    df_new['byLLM'] = df_new['byLLM'].str.strip().map({'True': True, 'False': False})
+    # '충전소', '주소', '단지명', '비교주소'를 기준으로 df_unmatched의 각 행에 대한 byLLM 값을 찾습니다.
+    df_unmatched['byLLM'] = df_unmatched.set_index(['충전소', '주소', '단지명', '비교주소']).index.map(df_new.set_index(['충전소', '주소', '단지명', '비교주소'])['byLLM'])
+    # byLLM 값이 True인 경우에만 Confirm 값을 True로 설정합니다.
+    df_unmatched['Confirm'] = df_unmatched['byLLM'].apply(lambda x: True if x == True else False)
+    df_unmatched = df_unmatched.sort_values(by=['byLLM', '매칭점수'], ascending=[False, False])
+
+    return df_unmatched
+
 
 
 @st.cache_data
@@ -189,6 +298,22 @@ if selected_region == '전체 선택':
 
 st.sidebar.warning("전체선택을 하면 처리하는 데 시간이 꽤 걸립니다. 주의하세요.")
 
+# selection이 바뀌면 llm_output을 초기화
+if 'selected_province_prev' not in st.session_state:
+    st.session_state.selected_province_prev = None
+
+if st.session_state.selected_province_prev != selected_province:
+    st.session_state.llm_output = None
+    st.session_state.selected_province_prev = selected_province
+
+if 'selected_region_prev' not in st.session_state:
+    st.session_state.selected_region_prev = None
+
+if st.session_state.selected_region_prev != selected_region:
+    st.session_state.llm_output = None
+    st.session_state.selected_region_prev = selected_region
+
+
 # 선택된 시군구 관련 데이터 표시하기 위한 sidebar
 sidebar_selected = st.sidebar.container()
 
@@ -236,8 +361,6 @@ with view_raw:
 
 
 
-
-
 view_context = st.expander("아파트 이름 & 주소 유사도 검색 결과", expanded=False)
 
 # selEvc, compare_result = get_matches(selEvc)
@@ -245,7 +368,7 @@ view_context = st.expander("아파트 이름 & 주소 유사도 검색 결과", 
 result_list = []
 compare_result = {'주소일치': 0, '유사추정': 0, '불일치': 0}
 
-# 각 그룹에 대해 get_matches 함수를 반복적으로 호출합니다.
+# 각 그룹에 대해 get_matches 함수를 반복적으로 호출합니다. "전체 선택"이 아니면 region, district가 하나여서 반복문이 한 번만 실행됩니다.
 for (region, district), group in selEvc.groupby(['지역', '시군구']):
     for (r2, d2), g2 in selApt.groupby(['시도', '시군구']):
         if (region, district) == (r2, d2):
@@ -265,13 +388,39 @@ with sidebar_selected:
 
 with view_context:
     st.write("주소 일치", compare_result['주소일치'], selEvc[selEvc['매칭점수'] == 100])
-    st.write("이름 및 주소 유사", compare_result['유사추정'], selEvc[(selEvc['매칭점수'] < 100) & (selEvc['단지코드'] != "NA")])
-    st.write("이름 및 주소 불일치", compare_result['불일치'], selEvc[selEvc['단지코드'] == "NA"])
+    st.write("이름 및 주소 유사", compare_result['유사추정'], selEvc[(selEvc['매칭점수'] < 100) & selEvc['Confirm']])
+    st.write("이름 및 주소 불일치", compare_result['불일치'], selEvc[selEvc['Confirm'] == False])
 
+
+# LLM을 이용하여 유사도가 애매한 경우에 대하여 재검토 (Confirm이 아니며 매칭점수가 특정 이상인 경우)
+st.markdown("## 유사도 추가 검토가 필요한 항목")
+df_unmatched = selEvc[(selEvc['매칭점수'] > 60) & (selEvc['Confirm'] == False)].copy()
+
+st.session_state.llm_on = st.toggle("LLM으로 유사도 검토 결과 체크하기")
+if st.session_state.llm_on:
+    df_unmatched = llm_match(df_unmatched)
+
+# 사용자에게 수정한 결과를 반영할 수 있도록 테이블을 보여줍니다.
+df_confirmed = st.data_editor(
+    df_unmatched,
+    column_order= ['Confirm', '충전소', '주소', '단지명', '비교주소', '단지코드', 'byLLM', '매칭점수', '이름비교', '주소비교'],
+    column_config={
+        "Confirm": st.column_config.CheckboxColumn(
+            "Confirm",
+            help="이름 및 주소가 유사한 경우에만 체크하세요.",
+        )
+    },
+    use_container_width=True,
+    disabled=['충전소', '주소', 'byLLM', '매칭점수', '이름비교', '주소비교']
+)
+
+n_confirm = sum(df_confirmed['Confirm'])
+if st.button(f"➕ {n_confirm}개의 수정한 검토 결과 반영하기"):
+    selEvc.update(df_confirmed)
 
 
 # 단지코드별로 groupby해서 전체 주차장수와 충전기수, 비율을 구하기
-df = selEvc[selEvc['단지코드'] != "NA"]
+df = selEvc[selEvc['Confirm'] == True]
 df = df.groupby('단지코드').agg({'충전기수': 'sum'}).reset_index()
 df = df.merge(selApt, on='단지코드', how='left')
 df['충전기설치율'] = df['충전기수'] / df['총주차대수']
@@ -292,11 +441,11 @@ st.dataframe(
     hide_index=True,
 )
 
-df_unmatched = selEvc[selEvc['단지코드'] == "NA"]
-st.markdown("""## 단지코드가 없는 충전소
+df_remained = selEvc[selEvc['Confirm'] == False]
+st.markdown("""## k-apt와 매칭되지 않는 충전소
 K-APT의 단지 정보와 유사하지 않아 개별적으로 표시하였습니다.""")
 st.dataframe(
-    df_unmatched[['충전소', '주소', '충전기수']],
+    df_remained[['충전소', '주소', '충전기수']],
     hide_index=True,
 )
 
