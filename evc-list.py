@@ -10,8 +10,8 @@ from langchain.chains import create_extraction_chain
 from langchain import PromptTemplate, OpenAI, LLMChain
 from langchain.callbacks import StreamlitCallbackHandler
 
-os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-openai_api_key = os.environ.get("OPENAI_API_KEY")
+# os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+openai_api_key = os.environ.get("OPENAI_API_KEY")   # get API key from environment variable in Cloud Run
 
 # 아파트 이름과 주소 유사도 비교
 def split_address(addr):
