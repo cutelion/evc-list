@@ -1,0 +1,40 @@
+.streamlit/
+
+# 로그 파일 무시
+*.log
+
+# .git 폴더와 .gitignore 파일 무시
+.git/
+.gitignore
+
+# 빌드 및 테스트 임시 파일 무시
+*.tmp
+*.bak
+*.swp
+*.pyc
+*.pyo
+*.egg
+*.egg-info/
+dist/
+build/
+__pycache__/
+
+# 특정 디렉토리나 파일 무시
+secrets/
+config/local.yml
+database/*.sql
+
+# Node.js와 관련된 무시
+node_modules/
+npm-debug.log
+
+# IDE와 관련된 설정 무시
+.vscode/
+.idea/
+*.iml
+*.suo
+*.dbmdl
+*.dbproj.schemaview
+*.pfx
+*.publishsettings
+*.code-workspace
